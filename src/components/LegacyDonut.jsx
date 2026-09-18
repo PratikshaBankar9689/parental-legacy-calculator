@@ -1,5 +1,6 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
-const LegacyDonut = ({ motherPctSum, fatherPctSum }) => {
+
+export default function LegacyDonut({ motherTotal, fatherTotal }) {
   const data = [
     { name: "Mother", value: motherTotal },
     { name: "Father", value: fatherTotal },
@@ -30,6 +31,3 @@ const LegacyDonut = ({ motherPctSum, fatherPctSum }) => {
     </div>
   );
 }
-
-export default LegacyDonut
-
