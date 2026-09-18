@@ -56,6 +56,31 @@ export function validateDob(dobString) {
 }
 
 // --- Main calculation -------------------------------------------------------
+//
+// IMPORTANT DESIGN NOTE — read this before changing the math:
+//
+// The brief states two rules that use the same words ("Mother value",
+// "Father value", "Total") but cannot both be literally true of the same
+// number:
+//   Rule A: for each factor, Mother + Father = Total, and Total must sit
+//           inside that factor's stated [min, max] band.
+//   Rule B: summed across all 7 factors, Mother + Father = 100.
+//
+// The 7 given ranges only add up to somewhere between ~47.1 (all at min)
+// and ~54.2 (all at max) — they can never reach 100 by construction. So a
+// single set of numbers can't satisfy "stays in its band" AND "sums to 100"
+// at the same time.
+//
+// This implementation keeps the two rules as two distinct, clearly-labeled
+// outputs instead of silently stretching one to fake the other:
+//   - `total` / `mother` / `father` on each row: the literal factor score,
+//     always inside [min, max]. Rule A holds exactly on these numbers.
+//   - `totalPct` / `motherPct` / `fatherPct`: each factor's Total expressed
+//     as a normalized share of the 7-factor sum, so these percentages add
+//     up to exactly 100 across all factors. Rule B holds exactly on these.
+// Both are computed from the same underlying Mother/Father split, using one
+// constant scale factor, so the "which parent leads" verdict is identical
+// either way you look at it.
 export function calculateLegacy(dobString) {
   const error = validateDob(dobString);
   if (error) throw new Error(error);
@@ -65,22 +90,14 @@ export function calculateLegacy(dobString) {
   const isOdd = day % 2 === 1;
   const rand = mulberry32(seedFromDate(dob));
 
-  // 1) Raw total per factor, inside its [min, max] band.
-  const raw = FACTORS.map((f) => f.min + rand() * (f.max - f.min));
-
-  // 2) Scale every raw total proportionally so the 7 totals sum to exactly 100,
-  //    while each value keeps its position relative to the others (and stays
-  //    close to its natural band).
-  const rawSum = raw.reduce((a, b) => a + b, 0);
-  const scale = 100 / rawSum;
-  const totals = raw.map((v) => v * scale);
-
-  // 3) Split each factor's total into Mother / Father using the day-parity rule.
-  //    The "winning" parent gets a dominant share (54%-68%), varied per factor
-  //    but deterministic (seeded), so the split isn't a flat 60/40 everywhere.
-  const results = FACTORS.map((f, i) => {
-    const total = totals[i];
-    const dominance = 0.54 + rand() * 0.14; // 0.54 - 0.68
+  // 1) Per-factor Total, drawn strictly inside its own [min, max] band —
+  //    never scaled, so it always respects the brief's range table.
+  //    Split into Mother/Father by the day-parity rule: the "winning"
+  //    parent gets a dominant share (54%-68%, varied per factor but
+  //    deterministic) so the split isn't a flat ratio on every row.
+  const results = FACTORS.map((f) => {
+    const total = f.min + rand() * (f.max - f.min);
+    const dominance = 0.54 + rand() * 0.14;
     let mother, father;
     if (isOdd) {
       mother = total * dominance;
@@ -95,55 +112,76 @@ export function calculateLegacy(dobString) {
       ...f,
       mother: roundedMother,
       father: roundedFather,
-      // Derive total from the already-rounded parts so Mother + Father === Total
-      // holds exactly at the displayed precision, not just before rounding.
+      // Total re-derived from the rounded parts, so Mother + Father === Total
+      // holds exactly at 3-decimal display precision (Rule A).
       total: round3(roundedMother + roundedFather),
     };
   });
 
-  // 4) Rounding each Mother/Father value to 3 decimals independently can leave
-  //    a tiny drift (e.g. grand total = 99.998 or 100.002). Correct it by
-  //    nudging the last factor's dominant-parent value so Mother Total +
-  //    Father Total lands on exactly 100.000, then re-derive that factor's total.
-  const preMotherSum = results.reduce((a, r) => a + r.mother, 0);
-  const preFatherSum = results.reduce((a, r) => a + r.father, 0);
-  const drift = round3(100 - round3(preMotherSum + preFatherSum));
+  const rawGrandTotal = round3(results.reduce((a, r) => a + r.total, 0));
+
+  // 2) Normalize each factor's Total into a percentage share of the 7-factor
+  //    sum. Because it's one constant scale factor (100 / rawGrandTotal)
+  //    applied to every row, the Mother/Father proportion within each factor
+  //    is unchanged — only the units change, from "raw score" to "% of 100".
+  const scale = rawGrandTotal > 0 ? 100 / rawGrandTotal : 0;
+  results.forEach((r) => {
+    r.motherPct = round3(r.mother * scale);
+    r.fatherPct = round3(r.father * scale);
+    r.totalPct = round3(r.motherPct + r.fatherPct);
+  });
+
+  // 3) Rounding each percentage to 3 decimals independently can leave a tiny
+  //    drift (e.g. 99.998 or 100.002). Correct it by nudging the last
+  //    factor's dominant-parent percentage so the grand percentage total
+  //    lands on exactly 100.000 (Rule B, exact).
+  const preMotherPct = results.reduce((a, r) => a + r.motherPct, 0);
+  const preFatherPct = results.reduce((a, r) => a + r.fatherPct, 0);
+  const drift = round3(100 - round3(preMotherPct + preFatherPct));
   if (drift !== 0) {
     const last = results[results.length - 1];
     if (isOdd) {
-      last.mother = round3(last.mother + drift);
+      last.motherPct = round3(last.motherPct + drift);
     } else {
-      last.father = round3(last.father + drift);
+      last.fatherPct = round3(last.fatherPct + drift);
     }
-    last.total = round3(last.mother + last.father);
+    last.totalPct = round3(last.motherPct + last.fatherPct);
   }
 
-  const motherTotal = round3(results.reduce((a, r) => a + r.mother, 0));
-  const fatherTotal = round3(results.reduce((a, r) => a + r.father, 0));
-  const grandTotal = round3(motherTotal + fatherTotal);
+  const motherRaw = round3(results.reduce((a, r) => a + r.mother, 0));
+  const fatherRaw = round3(results.reduce((a, r) => a + r.father, 0));
+  const motherPctSum = round3(results.reduce((a, r) => a + r.motherPct, 0));
+  const fatherPctSum = round3(results.reduce((a, r) => a + r.fatherPct, 0));
+  const grandPct = round3(motherPctSum + fatherPctSum);
 
   let winner = "Equal";
-  if (motherTotal > fatherTotal) winner = "Mother";
-  else if (fatherTotal > motherTotal) winner = "Father";
+  if (motherPctSum > fatherPctSum) winner = "Mother";
+  else if (fatherPctSum > motherPctSum) winner = "Father";
 
   return {
     dob: dobString,
     day,
     isOdd,
     results,
-    motherTotal,
-    fatherTotal,
-    grandTotal,
+    rawGrandTotal,
+    motherRaw,
+    fatherRaw,
+    motherPctSum,
+    fatherPctSum,
+    grandPct,
     winner,
   };
 }
 
 // --- CSV export helper -----------------------------------------------------
 export function toCsv(data) {
-  const header = "Factor,Mother,Father,Total\n";
+  const header = "Factor,Min,Max,Mother,Father,Total,Mother %,Father %,Total %\n";
   const rows = data.results
-    .map((r) => `${r.name},${r.mother},${r.father},${r.total}`)
+    .map(
+      (r) =>
+        `${r.name},${r.min},${r.max},${r.mother},${r.father},${r.total},${r.motherPct},${r.fatherPct},${r.totalPct}`
+    )
     .join("\n");
-  const footer = `\nMother Total,${data.motherTotal},,\nFather Total,,${data.fatherTotal},\nGrand Total,,,${data.grandTotal}\n`;
+  const footer = `\nRaw Total (sum of factor Totals),,,,,${data.rawGrandTotal},,,\nWeightage Total,,,,,,${data.motherPctSum},${data.fatherPctSum},${data.grandPct}\n`;
   return header + rows + footer;
 }

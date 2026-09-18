@@ -86,15 +86,10 @@ export default function App() {
 
             <div className="charts-grid">
               <DivergingBars results={data.results} />
-              <LegacyDonut motherTotal={data.motherTotal} fatherTotal={data.fatherTotal} />
+              <LegacyDonut motherPctSum={data.motherPctSum} fatherPctSum={data.fatherPctSum} />
             </div>
 
-            <ResultsTable
-              results={data.results}
-              motherTotal={data.motherTotal}
-              fatherTotal={data.fatherTotal}
-              grandTotal={data.grandTotal}
-            />
+            <ResultsTable data={data} />
 
             <div className="actions-row no-print">
               <button onClick={handleExportCsv}>Export CSV</button>

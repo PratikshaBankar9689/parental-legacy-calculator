@@ -50,31 +50,60 @@ src/
 
 ## How the calculation works
 
+### A note on why there are two sets of numbers
+
+The brief states two rules using the same words ("Mother value", "Father value",
+"Total"):
+- Rule A: for each factor, `Mother + Father = Total`, and Total must fall inside that
+  factor's given `[min, max]` range.
+- Rule B: summed across all 7 factors, `Mother + Father = 100`.
+
+These can't both be literally true of one number: the 7 given ranges only add up to
+somewhere between **~47.1** (every factor at its minimum) and **~54.2** (every factor
+at its maximum) — they can never reach 100, no matter what's picked inside them. An
+earlier version of this app scaled every value up to force the sum to 100, which broke
+Rule A (e.g. a factor capped at 10.777 was showing 21+). That's wrong, so the app now
+keeps the two rules as two distinct, clearly-labeled outputs instead of quietly
+stretching one to fake the other:
+
+- **Value columns** (`Mother`, `Father`, `Total`) — the literal factor score, always
+  inside its stated `[min, max]`. Rule A holds exactly here.
+- **Weightage % columns** (`Mother %`, `Father %`, `Total %`) — each factor's Total
+  expressed as a normalized share of the 7-factor sum, so these add up to exactly
+  `100` across all factors. Rule B holds exactly here.
+
+Both come from the same single Mother/Father split (one constant scale factor is
+applied to every row to go from raw value to %), so "which parent leads" is identical
+whichever set of numbers you look at — it's the same underlying data, just shown in
+two units.
+
+### Step by step
+
 1. **Seeded randomness, not `Math.random()`.** The DOB is turned into a numeric seed
-   (`YYYYMMDD`) and fed into a small deterministic PRNG (`mulberry32`). This means the
-   **same Date of Birth always produces the same result** — the app isn't re-rolling
-   random numbers on every render, which matters for a "calculator."
+   (`YYYYMMDD`) and fed into a small deterministic PRNG (`mulberry32`). The
+   **same Date of Birth always produces the same result.**
 
-2. **Per-factor total, inside its band.** For each of the 7 factors, a raw total is
-   drawn from its `[min, max]` range given in the brief (e.g. Genetic Inheritance:
-   9.333–10.777).
+2. **Per-factor Total, strictly inside its band.** For each of the 7 factors, the
+   Total is drawn from its `[min, max]` range given in the brief (e.g. Genetic
+   Inheritance: 9.333–10.777) — never scaled beyond it.
 
-3. **Scale to 100.** The 7 raw totals are scaled proportionally so they sum to exactly
-   `100`, satisfying "Sum of all Mother values + Sum of all Father values = 100" while
-   preserving each factor's relative weight.
-
-4. **Mother/Father split by day parity.**
-   - **Odd** day of month → Mother gets the dominant share of each factor's total.
+3. **Mother/Father split by day parity.**
+   - **Odd** day of month → Mother gets the dominant share of each factor's Total.
    - **Even** day of month → Father gets the dominant share.
    - The dominant share is itself varied per factor (54%–68%, seeded) so the split
-     isn't a flat, robotic 60/40 on every row — but it's still deterministic.
-   - By construction, `Mother + Father = Total` for every factor.
+     isn't a flat, robotic 60/40 on every row.
+   - By construction, `Mother + Father = Total` for every factor, and both stay
+     inside the factor's range (each is a fraction of a number already in range).
+
+4. **Weightage %.** Each factor's Total is divided by the sum of all 7 raw Totals and
+   multiplied by 100, giving a normalized percentage. Applied uniformly, this turns
+   the Mother/Father split into percentages that sum to exactly 100.
 
 5. **Rounding correction.** Values are rounded to 3 decimals for display. Any tiny
-   rounding drift is folded back into the last factor so the grand total is exactly
-   `100.000`, not `99.998` or `100.003`.
+   rounding drift in the percentage columns is folded back into the last factor so
+   the weightage grand total is exactly `100.000`, not `99.998` or `100.003`.
 
-6. **Legacy winner.** Whichever parent's column sums higher across all 7 factors is
+6. **Legacy winner.** Whichever parent's weightage sums higher across all 7 factors is
    shown as the "leading" legacy in the summary card.
 
 ## Features implemented

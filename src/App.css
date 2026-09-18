@@ -284,10 +284,29 @@ h2 {
   font-size: 0.78rem;
 }
 
+.results-table .group-head {
+  text-align: center;
+  color: var(--gold);
+  border-bottom: 1px solid var(--border);
+}
+
+.results-table td.dim {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
 .results-table tfoot td {
   font-family: "Fraunces", serif;
   border-bottom: none;
   border-top: 2px solid var(--gold);
+}
+
+.table-note {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  max-width: 70ch;
+  margin: 0.9rem 0 1.5rem;
 }
 
 .actions-row {
