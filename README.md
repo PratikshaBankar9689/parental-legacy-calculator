@@ -8,6 +8,7 @@ per the task FAQ, React + localStorage is sufficient.
 
 ## Live demo
 
+https://parental-legacy-calculator-one.vercel.app/
 
 ## Tech stack
 
