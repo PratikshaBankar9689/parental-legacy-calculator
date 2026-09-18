@@ -295,6 +295,16 @@ h2 {
   font-size: 0.82rem;
 }
 
+.results-table td.lead-cell {
+  font-weight: 600;
+  color: var(--gold);
+}
+
+.results-table td.row-total {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 .results-table tfoot td {
   font-family: "Fraunces", serif;
   border-bottom: none;

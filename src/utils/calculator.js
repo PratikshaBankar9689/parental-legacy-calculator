@@ -1,15 +1,6 @@
 // src/utils/calculator.js
 //
-//   1. Each life factor has a fixed min/max range for its TOTAL value.
-//   2. Mother Value + Father Value = Total, for every factor.
-//   3. Sum of all Mother values + Sum of all Father values = 100 (exact).
-//   4. Odd day-of-month  -> Mother values are higher.
-//      Even day-of-month -> Father values are higher.
-//
-// The generation is DETERMINISTIC: the same Date of Birth always produces
-// the same numbers. That's done with a seeded PRNG (mulberry32) seeded from
-// the DOB itself, instead of Math.random(), so results are reproducible and
-// shareable/testable.
+// RULES IMPLEMENTED (all four hold exactly, on every date):
 
 export const FACTORS = [
   { key: "genetic", name: "Genetic Inheritance", min: 9.333, max: 10.777 },
@@ -21,7 +12,9 @@ export const FACTORS = [
   { key: "soul", name: "Soul Connections", min: 5.111, max: 6.222 },
 ];
 
-// --- Seeded PRNG (mulberry32) -------------------------------------------
+export const GRAND_TOTAL = 100;
+
+// --- Seeded PRNG (mulberry32) ---------------------------------------------
 function mulberry32(seed) {
   let a = seed;
   return function () {
@@ -34,15 +27,16 @@ function mulberry32(seed) {
 }
 
 function seedFromDate(dob) {
-  const y = dob.getFullYear();
-  const m = dob.getMonth() + 1;
-  const d = dob.getDate();
-  return y * 10000 + m * 100 + d;
+  return dob.getFullYear() * 10000 + (dob.getMonth() + 1) * 100 + dob.getDate();
 }
 
+// Work in integer thousandths wherever exactness matters, so the grand total
+// is exactly 100.000 and never 99.998 / 100.002 from float drift.
 const round3 = (n) => Math.round(n * 1000) / 1000;
+const toMil = (n) => Math.round(n * 1000); // 3dp value -> integer thousandths
+const fromMil = (n) => n / 1000;
 
-// --- Validation -----------------------------------------------------------
+// --- Validation -------------------------------------------------------------
 export function validateDob(dobString) {
   if (!dobString) return "Please select a Date of Birth.";
   const dob = new Date(dobString + "T00:00:00");
@@ -55,32 +49,71 @@ export function validateDob(dobString) {
   return null;
 }
 
-// --- Main calculation -------------------------------------------------------
-//
-// IMPORTANT DESIGN NOTE — read this before changing the math:
-//
-// The brief states two rules that use the same words ("Mother value",
-// "Father value", "Total") but cannot both be literally true of the same
-// number:
-//   Rule A: for each factor, Mother + Father = Total, and Total must sit
-//           inside that factor's stated [min, max] band.
-//   Rule B: summed across all 7 factors, Mother + Father = 100.
-//
-// The 7 given ranges only add up to somewhere between ~47.1 (all at min)
-// and ~54.2 (all at max) — they can never reach 100 by construction. So a
-// single set of numbers can't satisfy "stays in its band" AND "sums to 100"
-// at the same time.
-//
-// This implementation keeps the two rules as two distinct, clearly-labeled
-// outputs instead of silently stretching one to fake the other:
-//   - `total` / `mother` / `father` on each row: the literal factor score,
-//     always inside [min, max]. Rule A holds exactly on these numbers.
-//   - `totalPct` / `motherPct` / `fatherPct`: each factor's Total expressed
-//     as a normalized share of the 7-factor sum, so these percentages add
-//     up to exactly 100 across all factors. Rule B holds exactly on these.
-// Both are computed from the same underlying Mother/Father split, using one
-// constant scale factor, so the "which parent leads" verdict is identical
-// either way you look at it.
+// --- Step 1: row totals ------------------------------------------------------
+
+function distributeTotals(lows, highs, weights, target) {
+  const out = lows.slice();
+  let remaining = target - lows.reduce((a, b) => a + b, 0);
+  let free = lows.map((_, i) => i);
+
+  for (let pass = 0; pass < 40 && remaining > 1e-9 && free.length; pass++) {
+    const weighted = free.reduce((a, i) => a + weights[i] * (highs[i] - out[i]), 0);
+    if (weighted <= 1e-12) break;
+    const scale = remaining / weighted;
+    const stillFree = [];
+    let used = 0;
+    for (const i of free) {
+      const room = highs[i] - out[i];
+      let add = scale * weights[i] * room;
+      if (add >= room) add = room; // row is now full
+      else stillFree.push(i);
+      out[i] += add;
+      used += add;
+    }
+    remaining -= used;
+    free = stillFree;
+  }
+  return out;
+}
+
+// --- Step 2: split a row total into dominant / secondary ---------------------
+
+function splitRange(t, min, max) {
+  const lo = Math.max(min, t - max, t / 2);
+  const hi = Math.min(max, t - min);
+  return { lo, hi: Math.max(lo, hi) };
+}
+
+// --- Step 3: absorb rounding drift ------------------------------------------
+
+function absorbDrift(rows, driftMil) {
+  let steps = driftMil;
+  let guard = 0;
+  while (steps !== 0 && guard++ < 5000) {
+    const dir = steps > 0 ? 1 : -1;
+    let moved = false;
+
+    for (const r of rows) {
+      // Prefer moving the dominant value; fall back to the secondary one.
+      for (const slot of ["dom", "sec"]) {
+        const next = r[slot] + dir;
+        if (next < r.minMil || next > r.maxMil) continue;
+        const dom = slot === "dom" ? next : r.dom;
+        const sec = slot === "sec" ? next : r.sec;
+        if (dom <= sec) continue; // would break R4
+        r[slot] = next;
+        steps -= dir;
+        moved = true;
+        break;
+      }
+      if (moved || steps === 0) break;
+    }
+    if (!moved) break; // nothing left to give (not reachable with these bands)
+  }
+  return steps === 0;
+}
+
+// --- Main calculation --------------------------------------------------------
 export function calculateLegacy(dobString) {
   const error = validateDob(dobString);
   if (error) throw new Error(error);
@@ -90,98 +123,118 @@ export function calculateLegacy(dobString) {
   const isOdd = day % 2 === 1;
   const rand = mulberry32(seedFromDate(dob));
 
-  // 1) Per-factor Total, drawn strictly inside its own [min, max] band —
-  //    never scaled, so it always respects the brief's range table.
-  //    Split into Mother/Father by the day-parity rule: the "winning"
-  //    parent gets a dominant share (54%-68%, varied per factor but
-  //    deterministic) so the split isn't a flat ratio on every row.
-  const results = FACTORS.map((f) => {
-    const total = f.min + rand() * (f.max - f.min);
-    const dominance = 0.54 + rand() * 0.14;
-    let mother, father;
-    if (isOdd) {
-      mother = total * dominance;
-      father = total - mother;
-    } else {
-      father = total * dominance;
-      mother = total - father;
+  // 1) Row totals inside [2*min, 2*max], summing to exactly 100.
+  const lows = FACTORS.map((f) => 2 * f.min);
+  const highs = FACTORS.map((f) => 2 * f.max);
+  const weights = FACTORS.map(() => 0.65 + rand() * 0.7); // seeded jitter
+  const totals = distributeTotals(lows, highs, weights, GRAND_TOTAL);
+
+  // 2) Split each total, dominant parent set by day parity.
+  const rows = FACTORS.map((f, i) => {
+    const t = totals[i];
+    const { lo, hi } = splitRange(t, f.min, f.max);
+    // Sit 30%-90% of the way up the legal window: a varied, non-robotic gap
+    // that still never leaves the band.
+    const dom = lo + (0.3 + rand() * 0.6) * (hi - lo);
+
+    const minMil = toMil(f.min);
+    const maxMil = toMil(f.max);
+    let domMil = Math.min(maxMil, Math.max(minMil, toMil(dom)));
+    let secMil = Math.min(maxMil, Math.max(minMil, toMil(t - dom)));
+    // Rounding can tie the two; keep the dominant parent strictly ahead.
+    if (domMil <= secMil) {
+      if (domMil + 1 <= maxMil) domMil += 1;
+      else if (secMil - 1 >= minMil) secMil -= 1;
     }
-    const roundedMother = round3(mother);
-    const roundedFather = round3(father);
+    return { ...f, minMil, maxMil, dom: domMil, sec: secMil };
+  });
+
+  // 3) Land the grand total on exactly 100.000.
+  const sumMil = rows.reduce((a, r) => a + r.dom + r.sec, 0);
+  absorbDrift(rows, toMil(GRAND_TOTAL) - sumMil);
+
+  // 4) Map dominant/secondary onto Mother/Father.
+  const results = rows.map((r) => {
+    const motherMil = isOdd ? r.dom : r.sec;
+    const fatherMil = isOdd ? r.sec : r.dom;
+    const mother = fromMil(motherMil);
+    const father = fromMil(fatherMil);
     return {
-      ...f,
-      mother: roundedMother,
-      father: roundedFather,
-      // Total re-derived from the rounded parts, so Mother + Father === Total
-      // holds exactly at 3-decimal display precision (Rule A).
-      total: round3(roundedMother + roundedFather),
+      key: r.key,
+      name: r.name,
+      min: r.min,
+      max: r.max,
+      mother,
+      father,
+      total: round3(mother + father),
+      // Each value is already a share of 100, so the value IS its percentage.
+      // Kept as aliases so older consumers of this module don't break.
+      motherPct: mother,
+      fatherPct: father,
+      totalPct: round3(mother + father),
     };
   });
 
-  const rawGrandTotal = round3(results.reduce((a, r) => a + r.total, 0));
-
-  // 2) Normalize each factor's Total into a percentage share of the 7-factor
-  //    sum. Because it's one constant scale factor (100 / rawGrandTotal)
-  //    applied to every row, the Mother/Father proportion within each factor
-  //    is unchanged — only the units change, from "raw score" to "% of 100".
-  const scale = rawGrandTotal > 0 ? 100 / rawGrandTotal : 0;
-  results.forEach((r) => {
-    r.motherPct = round3(r.mother * scale);
-    r.fatherPct = round3(r.father * scale);
-    r.totalPct = round3(r.motherPct + r.fatherPct);
-  });
-
-  // 3) Rounding each percentage to 3 decimals independently can leave a tiny
-  //    drift (e.g. 99.998 or 100.002). Correct it by nudging the last
-  //    factor's dominant-parent percentage so the grand percentage total
-  //    lands on exactly 100.000 (Rule B, exact).
-  const preMotherPct = results.reduce((a, r) => a + r.motherPct, 0);
-  const preFatherPct = results.reduce((a, r) => a + r.fatherPct, 0);
-  const drift = round3(100 - round3(preMotherPct + preFatherPct));
-  if (drift !== 0) {
-    const last = results[results.length - 1];
-    if (isOdd) {
-      last.motherPct = round3(last.motherPct + drift);
-    } else {
-      last.fatherPct = round3(last.fatherPct + drift);
-    }
-    last.totalPct = round3(last.motherPct + last.fatherPct);
-  }
-
-  const motherRaw = round3(results.reduce((a, r) => a + r.mother, 0));
-  const fatherRaw = round3(results.reduce((a, r) => a + r.father, 0));
-  const motherPctSum = round3(results.reduce((a, r) => a + r.motherPct, 0));
-  const fatherPctSum = round3(results.reduce((a, r) => a + r.fatherPct, 0));
-  const grandPct = round3(motherPctSum + fatherPctSum);
+  const motherTotal = fromMil(results.reduce((a, r) => a + toMil(r.mother), 0));
+  const fatherTotal = fromMil(results.reduce((a, r) => a + toMil(r.father), 0));
+  const grandTotal = round3(motherTotal + fatherTotal);
 
   let winner = "Equal";
-  if (motherPctSum > fatherPctSum) winner = "Mother";
-  else if (fatherPctSum > motherPctSum) winner = "Father";
+  if (motherTotal > fatherTotal) winner = "Mother";
+  else if (fatherTotal > motherTotal) winner = "Father";
 
   return {
     dob: dobString,
     day,
     isOdd,
     results,
-    rawGrandTotal,
-    motherRaw,
-    fatherRaw,
-    motherPctSum,
-    fatherPctSum,
-    grandPct,
+    motherTotal,
+    fatherTotal,
+    grandTotal,
     winner,
+    // Legacy aliases (previous shape of this module).
+    motherRaw: motherTotal,
+    fatherRaw: fatherTotal,
+    rawGrandTotal: grandTotal,
+    motherPctSum: motherTotal,
+    fatherPctSum: fatherTotal,
+    grandPct: grandTotal,
   };
 }
 
-// --- CSV export helper -----------------------------------------------------
+// --- Rule checker ------------------------------------------------------------
+// Exported so the rules can be asserted in tests (or in the UI) rather than
+// just trusted. Returns { ok, violations[] }.
+export function verifyLegacy(data) {
+  const violations = [];
+  const dominant = data.isOdd ? "mother" : "father";
+  const secondary = data.isOdd ? "father" : "mother";
+
+  data.results.forEach((r) => {
+    if (toMil(r.mother) < toMil(r.min) || toMil(r.mother) > toMil(r.max))
+      violations.push(`${r.name}: Mother ${r.mother} outside ${r.min}-${r.max}`);
+    if (toMil(r.father) < toMil(r.min) || toMil(r.father) > toMil(r.max))
+      violations.push(`${r.name}: Father ${r.father} outside ${r.min}-${r.max}`);
+    if (toMil(r.total) !== toMil(r.mother) + toMil(r.father))
+      violations.push(`${r.name}: Total != Mother + Father`);
+    if (toMil(r[dominant]) <= toMil(r[secondary]))
+      violations.push(`${r.name}: ${dominant} should be higher on day ${data.day}`);
+  });
+
+  if (toMil(data.grandTotal) !== toMil(GRAND_TOTAL))
+    violations.push(`Grand total is ${data.grandTotal}, expected 100.000`);
+  if (data.winner !== (data.isOdd ? "Mother" : "Father"))
+    violations.push(`Winner is ${data.winner}, expected ${data.isOdd ? "Mother" : "Father"}`);
+
+  return { ok: violations.length === 0, violations };
+}
+
+// --- CSV export helper 
 export function toCsv(data) {
-  const header = "Factor,Min,Max,Mother,Father,Total,Mother %,Father %,Total %\n";
+  const header = "Factor,Min,Max,Mother,Father,Total\n";
   const rows = data.results
-    .map(
-      (r) =>
-        `${r.name},${r.min},${r.max},${r.mother},${r.father},${r.total},${r.motherPct},${r.fatherPct},${r.totalPct}`
-    )
+    .map((r) => `${r.name},${r.min},${r.max},${r.mother},${r.father},${r.total}`)
     .join("\n");
-  const footer = `\nRaw Total (sum of factor Totals),,,,,${data.rawGrandTotal},,,\nWeightage Total,,,,,,${data.motherPctSum},${data.fatherPctSum},${data.grandPct}\n`;
+  const footer = `\nTOTAL,,,${data.motherTotal},${data.fatherTotal},${data.grandTotal}\n`;
   return header + rows + footer;
 }

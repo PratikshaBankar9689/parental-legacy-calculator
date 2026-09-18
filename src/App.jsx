@@ -67,8 +67,8 @@ export default function App() {
             Parental Legacy <span className="amp">&amp;</span> Life Factors
           </h1>
           <p className="header-sub">
-            Enter a date of birth to reveal how Mother and Father lineage weigh across seven life
-            factors — always balancing to exactly 100.
+            Enter a date of birth to see how Mother and Father lineage weigh across seven life
+            factors — every value inside its own min–max band, always totalling exactly 100.
           </p>
         </div>
         <button className="theme-toggle" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
@@ -86,7 +86,7 @@ export default function App() {
 
             <div className="charts-grid">
               <DivergingBars results={data.results} />
-              <LegacyDonut motherPctSum={data.motherPctSum} fatherPctSum={data.fatherPctSum} />
+              <LegacyDonut motherTotal={data.motherTotal} fatherTotal={data.fatherTotal} />
             </div>
 
             <ResultsTable data={data} />

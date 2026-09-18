@@ -1,7 +1,7 @@
 import React from 'react'
 
 const DivergingBars = ({ results }) => {
- const maxVal = Math.max(...results.map((r) => Math.max(r.mother, r.father)));
+  const maxVal = Math.max(...results.map((r) => Math.max(r.mother, r.father)));
 
   return (
     <section className="diverging-chart" aria-label="Mother vs Father comparison chart">

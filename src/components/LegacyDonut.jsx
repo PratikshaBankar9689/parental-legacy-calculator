@@ -1,9 +1,8 @@
-import React from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 const LegacyDonut = ({ motherPctSum, fatherPctSum }) => {
   const data = [
-    { name: "Mother", value: motherPctSum },
-    { name: "Father", value: fatherPctSum },
+    { name: "Mother", value: motherTotal },
+    { name: "Father", value: fatherTotal },
   ];
   const COLORS = ["#B94E64", "#2F6F6B"];
 
